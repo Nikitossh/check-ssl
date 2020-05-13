@@ -1,0 +1,5 @@
+admissionplex.dotin.us
+admissionplex-api.dotin.us
+admissionplex-mapi.dotin.us
+api.dotin.us
+api-doc.dotin.us

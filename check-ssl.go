@@ -1,16 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"crypto/tls"
 	"flag"
 	"fmt"
-	log "github.com/Sirupsen/logrus"
 	"math"
 	"net"
+	"net/smtp"
 	"os"
 	"runtime/debug"
-	"syscall"
 	"time"
+
+	log "github.com/Sirupsen/logrus"
 )
 
 // check exit codes
@@ -40,28 +42,30 @@ func main() {
 	defer catchPanic()
 
 	var host string
-	var ips []net.IP
+	var file string
 
 	flag.StringVar(&host, "host", "", "the domain name of the host to check")
-	flag.DurationVar(&lookupTimeout, "lookup-timeout", 10*time.Second, "timeout for DNS lookups - see: https://golang.org/pkg/time/#ParseDuration")
-	flag.DurationVar(&connectionTimeout, "connection-timeout", 30*time.Second, "timeout connection - see: https://golang.org/pkg/time/#ParseDuration")
+	flag.StringVar(&file, "file", "", "file with domain names of hosts to check")
+	flag.DurationVar(&lookupTimeout, "lookup-timeout", 5*time.Second, "timeout for DNS lookups - see: https://golang.org/pkg/time/#ParseDuration")
+	flag.DurationVar(&connectionTimeout, "connection-timeout", 5*time.Second, "timeout connection - see: https://golang.org/pkg/time/#ParseDuration")
 	flag.UintVar(&warningFlag, "w", 30, "warning validity in days")
 	flag.UintVar(&criticalFlag, "c", 14, "critical validity in days")
 	flag.BoolVar(&printVersion, "V", false, "print version and exit")
 	flag.Parse()
 
 	log.SetLevel(log.InfoLevel)
-	log.SetFormatter(&SimpleTextFormatter{DisableTimestamp: true})
+
 	if printVersion {
 		log.Infof("Version: %s", version)
 		os.Exit(0)
 	}
 
-	if host == "" {
+	if host == "" && file == "" {
 		flag.Usage()
-		log.Error("-host is required")
+		log.Error("-host or -file is required")
 		os.Exit(Critical)
 	}
+
 	if warningFlag < criticalFlag {
 		log.Warn("-c is higher than -w, i guess thats a bad i idea")
 		updateExitCode(Warning)
@@ -70,28 +74,69 @@ func main() {
 	warningValidity = time.Duration(warningFlag) * 24 * time.Hour
 	criticalValidity = time.Duration(criticalFlag) * 24 * time.Hour
 
-	ips = lookupIPWithTimeout(host, lookupTimeout)
+	if file != "" {
+		certsSoonExpire := processFile(file)
+		report := prepareForSendReport(certsSoonExpire)
+		log.Info("---------------------")
+		log.Info(report)
+	}
+
+	os.Exit(exitCode)
+}
+
+func processFile(filename string) (result []string) {
+	hosts := readFileToArr(filename)
+	results := checkCertificates(hosts)
+	for _, r := range results {
+		if r == "" {
+			continue
+		}
+		result = append(result, r)
+	}
+	return result
+}
+
+func prepareForSendReport(domains []string) (bigString string) {
+	for _, d := range domains {
+		bigString += fmt.Sprintf("%s\n", d)
+	}
+	return bigString
+}
+
+func readFileToArr(path string) []string {
+	file, err := os.Open(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	result := make([]string, 0)
+
+	for scanner.Scan() {
+		result = append(result, scanner.Text())
+	}
+	return result
+}
+
+func checkCertificates(hosts []string) []string {
+	result := make([]string, 0)
+	for _, h := range hosts {
+		result = append(result, checkHostCert(h))
+	}
+	return result
+}
+
+// Check if certificate is close to expire date
+func checkHostCert(host string) (result string) {
+	ips := lookupIPWithTimeout(host, lookupTimeout)
 	log.Debugf("lookup result: %v", ips)
 
 	for _, ip := range ips {
 		dialer := net.Dialer{Timeout: connectionTimeout, Deadline: time.Now().Add(connectionTimeout + 5*time.Second)}
 		connection, err := tls.DialWithDialer(&dialer, "tcp", fmt.Sprintf("[%s]:443", ip), &tls.Config{ServerName: host})
+		// skip errors
 		if err != nil {
-			// catch missing ipv6 connectivity
-			// if the ip is ipv6 and the resulting error is "no route to host", the record is skipped
-			// otherwise the check will switch to critical
-			if ip.To4() == nil {
-				switch err.(type) {
-				case *net.OpError:
-					// https://stackoverflow.com/questions/38764084/proper-way-to-handle-missing-ipv6-connectivity
-					if err.(*net.OpError).Err.(*os.SyscallError).Err == syscall.EHOSTUNREACH {
-						log.Infof("%-15s - ignoring unreachable IPv6 address", ip)
-						continue
-					}
-				}
-			}
-			log.Errorf("%s: %s", ip, err)
-			updateExitCode(Critical)
 			continue
 		}
 		// rembember the checked certs based on their Signature
@@ -120,18 +165,42 @@ func main() {
 					certificateStatus = OK
 				}
 				updateExitCode(certificateStatus)
+				if certificateStatus == Critical || certificateStatus == Warning {
+					result = fmt.Sprintf("%s valid for %s", cert.Subject.CommonName, formatDuration(remainingValidity))
+				}
 				logWithSeverity(certificateStatus, "%-15s - %s valid until %s (%s)", ip, cert.Subject.CommonName, cert.NotAfter, formatDuration(remainingValidity))
 			}
 		}
 		connection.Close()
 	}
-	os.Exit(exitCode)
+	return result
+}
+
+func send(body string) {
+	from := "gitlab.icebreakrr@gmail.com"
+	pass := "XdiQK3R6iT"
+	to := "nikita@dotin.us"
+
+	msg := "From: " + from + "\n" +
+		"To: " + to + "\n" +
+		"Subject: Certificates problems\n\n" +
+		body
+
+	err := smtp.SendMail("smtp.gmail.com:587",
+		smtp.PlainAuth("", from, pass, "smtp.gmail.com"),
+		from, []string{to}, []byte(msg))
+
+	if err != nil {
+		log.Printf("smtp error: %s", err)
+		return
+	}
+	log.Print("report sent")
 }
 
 func lookupIPWithTimeout(host string, timeout time.Duration) []net.IP {
 	timer := time.NewTimer(timeout)
-
 	ch := make(chan []net.IP, 1)
+
 	go func() {
 		r, err := net.LookupIP(host)
 		if err != nil {
@@ -139,6 +208,7 @@ func lookupIPWithTimeout(host string, timeout time.Duration) []net.IP {
 		}
 		ch <- r
 	}()
+
 	select {
 	case ips := <-ch:
 		return ips
@@ -158,7 +228,7 @@ func catchPanic() {
 }
 
 func formatDuration(in time.Duration) string {
-	var daysPart, hoursPart, minutesPart, secondsPart string
+	var daysPart, hoursPart string
 
 	days := math.Floor(in.Hours() / 24)
 	hoursRemaining := math.Mod(in.Hours(), 24)
@@ -169,24 +239,13 @@ func formatDuration(in time.Duration) string {
 	}
 
 	hours, hoursRemaining := math.Modf(hoursRemaining)
-	minutesRemaining := hoursRemaining * 60
 	if hours > 0 {
 		hoursPart = fmt.Sprintf("%.fh", hours)
 	} else {
 		hoursPart = ""
 	}
 
-	if minutesRemaining > 0 {
-		minutesPart = fmt.Sprintf("%.fm", minutesRemaining)
-	}
-
-	_, minutesRemaining = math.Modf(minutesRemaining)
-	secondsRemaining := minutesRemaining * 60
-	if secondsRemaining > 0 {
-		secondsPart = fmt.Sprintf("%.fs", secondsRemaining)
-	}
-
-	return fmt.Sprintf("%s %s %s %s", daysPart, hoursPart, minutesPart, secondsPart)
+	return fmt.Sprintf("%s %s", daysPart, hoursPart)
 }
 
 func logWithSeverity(severity int, format string, args ...interface{}) {
