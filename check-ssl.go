@@ -20,6 +20,7 @@ var lookupTimeout, connectionTimeout, warningValidity, criticalValidity time.Dur
 var warningFlag, criticalFlag uint
 var version string
 var printVersion bool
+var workers int
 
 func main() {
 	defer catchPanic()
@@ -72,8 +73,6 @@ func readFileToArr(path string) []string {
 	}
 	return result
 }
-
-var workers = runtime.NumCPU()
 
 func processCheckCertificates(hosts []string) string {
 	log.Infof("Processing certificates check with %v workers", workers)
