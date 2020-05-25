@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/smtp"
 	"os"
+	"runtime"
 	"runtime/debug"
 	"time"
 
@@ -28,9 +29,10 @@ func main() {
 
 	flag.StringVar(&host, "host", "", "the domain name of the host to check")
 	flag.StringVar(&file, "file", "", "file with domain names of hosts to check")
-	flag.DurationVar(&lookupTimeout, "lookup-timeout", 5*time.Second, "timeout for DNS lookups - see: https://golang.org/pkg/time/#ParseDuration")
+	flag.DurationVar(&lookupTimeout, "lookup-timeout", 30*time.Second, "timeout for DNS lookups - see: https://golang.org/pkg/time/#ParseDuration")
 	flag.DurationVar(&connectionTimeout, "connection-timeout", 10*time.Second, "timeout connection - see: https://golang.org/pkg/time/#ParseDuration")
-	flag.UintVar(&warningFlag, "w", 30, "warning validity in days")
+	flag.UintVar(&warningFlag, "d", 28, "warning validity in days")
+	flag.IntVar(&workers, "w", runtime.NumCPU(), "number of parallel workers")
 	flag.BoolVar(&printVersion, "V", false, "print version and exit")
 	flag.Parse()
 
@@ -71,10 +73,10 @@ func readFileToArr(path string) []string {
 	return result
 }
 
-var workers = 100
+var workers = runtime.NumCPU()
 
 func processCheckCertificates(hosts []string) string {
-	log.Infof("Processing certificates check with %v cpu", workers)
+	log.Infof("Processing certificates check with %v workers", workers)
 	domains := make(chan string, workers)
 	report := make(chan string, len(hosts))
 	done := make(chan struct{}, workers)
