@@ -15,28 +15,10 @@ import (
 	log "github.com/Sirupsen/logrus"
 )
 
-// check exit codes
-const (
-	OK       = iota
-	Warning  = iota
-	Critical = iota
-	Unknown  = iota
-)
-
-var exitCode = OK
 var lookupTimeout, connectionTimeout, warningValidity, criticalValidity time.Duration
 var warningFlag, criticalFlag uint
 var version string
 var printVersion bool
-
-func updateExitCode(newCode int) (changed bool) {
-	if newCode > exitCode {
-		exitCode = newCode
-		return true
-
-	}
-	return false
-}
 
 func main() {
 	defer catchPanic()
@@ -47,9 +29,8 @@ func main() {
 	flag.StringVar(&host, "host", "", "the domain name of the host to check")
 	flag.StringVar(&file, "file", "", "file with domain names of hosts to check")
 	flag.DurationVar(&lookupTimeout, "lookup-timeout", 5*time.Second, "timeout for DNS lookups - see: https://golang.org/pkg/time/#ParseDuration")
-	flag.DurationVar(&connectionTimeout, "connection-timeout", 5*time.Second, "timeout connection - see: https://golang.org/pkg/time/#ParseDuration")
+	flag.DurationVar(&connectionTimeout, "connection-timeout", 10*time.Second, "timeout connection - see: https://golang.org/pkg/time/#ParseDuration")
 	flag.UintVar(&warningFlag, "w", 30, "warning validity in days")
-	flag.UintVar(&criticalFlag, "c", 14, "critical validity in days")
 	flag.BoolVar(&printVersion, "V", false, "print version and exit")
 	flag.Parse()
 
@@ -63,46 +44,17 @@ func main() {
 	if host == "" && file == "" {
 		flag.Usage()
 		log.Error("-host or -file is required")
-		os.Exit(Critical)
-	}
-
-	if warningFlag < criticalFlag {
-		log.Warn("-c is higher than -w, i guess thats a bad i idea")
-		updateExitCode(Warning)
+		os.Exit(1)
 	}
 
 	warningValidity = time.Duration(warningFlag) * 24 * time.Hour
-	criticalValidity = time.Duration(criticalFlag) * 24 * time.Hour
 
 	if file != "" {
-		certsSoonExpire := processFile(file)
-		report := prepareForSendReport(certsSoonExpire)
-		log.Info("---------------------")
-		log.Info(report)
+		hosts := readFileToArr(file)
+		result := processCheckCertificates(hosts)
+		send(result, "nikita@dotin.us")
 	}
-
-	os.Exit(exitCode)
 }
-
-func processFile(filename string) (result []string) {
-	hosts := readFileToArr(filename)
-	results := checkCertificates(hosts)
-	for _, r := range results {
-		if r == "" {
-			continue
-		}
-		result = append(result, r)
-	}
-	return result
-}
-
-func prepareForSendReport(domains []string) (bigString string) {
-	for _, d := range domains {
-		bigString += fmt.Sprintf("%s\n", d)
-	}
-	return bigString
-}
-
 func readFileToArr(path string) []string {
 	file, err := os.Open(path)
 	if err != nil {
@@ -119,16 +71,54 @@ func readFileToArr(path string) []string {
 	return result
 }
 
-func checkCertificates(hosts []string) []string {
-	result := make([]string, 0)
-	for _, h := range hosts {
-		result = append(result, checkHostCert(h))
+var workers = 100
+
+func processCheckCertificates(hosts []string) string {
+	log.Infof("Processing certificates check with %v cpu", workers)
+	domains := make(chan string, workers)
+	report := make(chan string, len(hosts))
+	done := make(chan struct{}, workers)
+
+	go addHost(domains, hosts)
+
+	for i := 0; i < workers; i++ {
+		go checkHosts(done, report, domains)
+	}
+	go awaitCompletion(done, report)
+	result := prepareReport(report)
+	return result
+}
+
+func prepareReport(report <-chan string) string {
+	var result string
+	for line := range report {
+		result += line
 	}
 	return result
 }
 
-// Check if certificate is close to expire date
-func checkHostCert(host string) (result string) {
+func addHost(domains chan<- string, hosts []string) {
+	for _, host := range hosts {
+		domains <- host
+	}
+	close(domains)
+}
+
+func checkHosts(done chan<- struct{}, report chan string, domains <-chan string) {
+	for domain := range domains {
+		checkCertificateExpireDate(domain, report)
+	}
+	done <- struct{}{}
+}
+
+func awaitCompletion(done <-chan struct{}, report chan string) {
+	for i := 0; i < workers; i++ {
+		<-done
+	}
+	close(report)
+}
+
+func checkCertificateExpireDate(host string, report chan string) (result string) {
 	ips := lookupIPWithTimeout(host, lookupTimeout)
 	log.Debugf("lookup result: %v", ips)
 
@@ -155,20 +145,11 @@ func checkHostCert(host string) (result string) {
 					continue
 				}
 
-				var certificateStatus int
 				remainingValidity := cert.NotAfter.Sub(time.Now())
-				if remainingValidity < criticalValidity {
-					certificateStatus = Critical
-				} else if remainingValidity < warningValidity {
-					certificateStatus = Warning
-				} else {
-					certificateStatus = OK
+				if remainingValidity < warningValidity {
+					report <- fmt.Sprintf("%s will expire for %s\n", cert.Subject.CommonName, formatDuration(remainingValidity))
 				}
-				updateExitCode(certificateStatus)
-				if certificateStatus == Critical || certificateStatus == Warning {
-					result = fmt.Sprintf("%s valid for %s", cert.Subject.CommonName, formatDuration(remainingValidity))
-				}
-				logWithSeverity(certificateStatus, "%-15s - %s valid until %s (%s)", ip, cert.Subject.CommonName, cert.NotAfter, formatDuration(remainingValidity))
+				log.Infof("%s was checked", host)
 			}
 		}
 		connection.Close()
@@ -176,10 +157,10 @@ func checkHostCert(host string) (result string) {
 	return result
 }
 
-func send(body string) {
+func send(body string, sendTo string) {
 	from := "gitlab.icebreakrr@gmail.com"
 	pass := "XdiQK3R6iT"
-	to := "nikita@dotin.us"
+	to := sendTo
 
 	msg := "From: " + from + "\n" +
 		"To: " + to + "\n" +
@@ -213,8 +194,7 @@ func lookupIPWithTimeout(host string, timeout time.Duration) []net.IP {
 	case ips := <-ch:
 		return ips
 	case <-timer.C:
-		log.Errorf("timeout resolving %s", host)
-		updateExitCode(Critical)
+		log.Warningf("timeout resolving %s", host)
 	}
 	return make([]net.IP, 0)
 }
@@ -223,40 +203,19 @@ func catchPanic() {
 	if r := recover(); r != nil {
 		log.Errorf("Panic: %+v", r)
 		log.Error(string(debug.Stack()[:]))
-		os.Exit(Critical)
+		os.Exit(1)
 	}
 }
 
 func formatDuration(in time.Duration) string {
-	var daysPart, hoursPart string
+	var daysPart string
 
 	days := math.Floor(in.Hours() / 24)
-	hoursRemaining := math.Mod(in.Hours(), 24)
 	if days > 0 {
 		daysPart = fmt.Sprintf("%.fd", days)
 	} else {
 		daysPart = ""
 	}
 
-	hours, hoursRemaining := math.Modf(hoursRemaining)
-	if hours > 0 {
-		hoursPart = fmt.Sprintf("%.fh", hours)
-	} else {
-		hoursPart = ""
-	}
-
-	return fmt.Sprintf("%s %s", daysPart, hoursPart)
-}
-
-func logWithSeverity(severity int, format string, args ...interface{}) {
-	switch severity {
-	case OK:
-		log.Infof(format, args...)
-	case Warning:
-		log.Warnf(format, args...)
-	case Critical:
-		log.Errorf(format, args...)
-	default:
-		log.Panicf("Invalid severity %d", severity)
-	}
+	return fmt.Sprintf("%s", daysPart)
 }
