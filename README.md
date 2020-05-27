@@ -1,19 +1,21 @@
 # check-ssl
-Forked from https://github.com/wycore/check-ssl
+Forked from https://github.com/wycore/check-ssl and refactored to check file with list of FQDN 
+
+## POST file to check with curl
+curl  -H "multipart/form-data; boundary=" http://localhost:10000/upload -F  data=@file_with_domains.txt
 
 ## Usage
-
-    Usage of ./check-ssl:
-      -V	print version and exit
-      -connection-timeout duration
-            timeout connection - see: https://golang.org/pkg/time/#ParseDuration (default 30s)
-      -host string
-            the domain name of the host to check
-      - file string
-            the file with list of domain names to check
-      -lookup-timeout duration
-            timeout for DNS lookups - see: https://golang.org/pkg/time/#ParseDuration (default 10s)
-      -d uint
-            warning validity in days (default 28)
-      -w int
-            workers count (default CPU numbers)
+Usage of ./check-ssl:
+  -V    print version and exit
+  -connection-timeout duration
+        timeout connection - see: https://golang.org/pkg/time/#ParseDuration (default 10s)
+  -d uint
+        warning validity in days (default 28)
+  -file string
+        file with domain names of hosts to check
+  -lookup-timeout duration
+        timeout for DNS lookups - see: https://golang.org/pkg/time/#ParseDuration (default 30s)
+  -rest
+        run as a daemon with REST handlers
+  -w int
+        number of parallel workers (default 15)

@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"net/http"
 	"net/smtp"
 	"os"
-	"runtime"
 	"runtime/debug"
 	"time"
 
@@ -25,39 +25,93 @@ var workers int
 func main() {
 	defer catchPanic()
 
-	var host string
+	// var host string
 	var file string
+	var rest bool
 
-	flag.StringVar(&host, "host", "", "the domain name of the host to check")
+	// flag.StringVar(&host, "host", "", "the domain name of the host to check")
 	flag.StringVar(&file, "file", "", "file with domain names of hosts to check")
+	flag.BoolVar(&rest, "rest", false, "run as a daemon with REST handlers")
 	flag.DurationVar(&lookupTimeout, "lookup-timeout", 30*time.Second, "timeout for DNS lookups - see: https://golang.org/pkg/time/#ParseDuration")
 	flag.DurationVar(&connectionTimeout, "connection-timeout", 10*time.Second, "timeout connection - see: https://golang.org/pkg/time/#ParseDuration")
 	flag.UintVar(&warningFlag, "d", 28, "warning validity in days")
-	flag.IntVar(&workers, "w", runtime.NumCPU(), "number of parallel workers")
+	flag.IntVar(&workers, "w", 15, "number of parallel workers")
 	flag.BoolVar(&printVersion, "V", false, "print version and exit")
 	flag.Parse()
 
 	log.SetLevel(log.InfoLevel)
+
+	warningValidity = time.Duration(warningFlag) * 24 * time.Hour
 
 	if printVersion {
 		log.Infof("Version: %s", version)
 		os.Exit(0)
 	}
 
-	if host == "" && file == "" {
+	if file == "" && rest == false {
 		flag.Usage()
-		log.Error("-host or -file is required")
+		log.Error("-file or -rest is required")
 		os.Exit(1)
 	}
 
-	warningValidity = time.Duration(warningFlag) * 24 * time.Hour
-
 	if file != "" {
-		hosts := readFileToArr(file)
-		result := processCheckCertificates(hosts)
-		send(result, "nikita@dotin.us")
+		doJob(file)
+	}
+
+	if rest {
+		handleRequests()
 	}
 }
+
+func handleRequests() {
+	http.HandleFunc("/upload", uploadFile)
+	http.HandleFunc("/health", health)
+	log.Fatal(http.ListenAndServe(":10000", nil))
+}
+
+func health(w http.ResponseWriter, r *http.Request) {
+	fmt.Println(w, "UP")
+}
+
+func uploadFile(w http.ResponseWriter, r *http.Request) {
+	// Parse our multipart form, 10 << 20 specifies a maximum
+	// upload of 10 MB files.
+	parseErr := r.ParseMultipartForm(10 << 20)
+	if parseErr != nil {
+		fmt.Println(parseErr)
+		http.Error(w, "failed to parse multipart message", http.StatusBadRequest)
+		return
+	}
+	// FormFile returns the first file for the given key `file`
+	// it also returns the FileHeader so we can get the Filename,
+	// the Header and the size of the file
+	file, handler, err := r.FormFile("data")
+	if err != nil {
+		log.Errorln("Error Retrieving the File")
+		log.Errorln(err)
+		return
+	}
+	defer file.Close()
+	log.Infoln("Uploaded File: %+v\n", handler.Filename)
+	log.Infoln("File Size: %+v\n", handler.Size)
+	log.Infoln("MIME Header: %+v\n", handler.Header)
+
+	scanner := bufio.NewScanner(file)
+	result := make([]string, 0)
+
+	for scanner.Scan() {
+		result = append(result, scanner.Text())
+	}
+	ressult := processCheckCertificates(result)
+	send(ressult, "nikita@dotin.us")
+}
+
+func doJob(file string) {
+	hosts := readFileToArr(file)
+	result := processCheckCertificates(hosts)
+	send(result, "nikita@dotin.us")
+}
+
 func readFileToArr(path string) []string {
 	file, err := os.Open(path)
 	if err != nil {
