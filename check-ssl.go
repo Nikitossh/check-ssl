@@ -13,7 +13,7 @@ import (
 	"runtime/debug"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 var lookupTimeout, connectionTimeout, warningValidity, criticalValidity time.Duration
@@ -73,6 +73,7 @@ func health(w http.ResponseWriter, r *http.Request) {
 	fmt.Println(w, "UP")
 }
 
+// rest processing
 func uploadFile(w http.ResponseWriter, r *http.Request) {
 	// Parse our multipart form, 10 << 20 specifies a maximum
 	// upload of 10 MB files.
@@ -102,10 +103,14 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 	for scanner.Scan() {
 		result = append(result, scanner.Text())
 	}
+
 	ressult := processCheckCertificates(result)
 	send(ressult, "nikita@dotin.us")
+	send(ressult, "mayank@dotin.us")
+	send(ressult, "romans@dotin.us")
 }
 
+// for file processing
 func doJob(file string) {
 	hosts := readFileToArr(file)
 	result := processCheckCertificates(hosts)

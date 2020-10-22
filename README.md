@@ -2,7 +2,7 @@
 Forked from https://github.com/wycore/check-ssl and refactored to check file with list of FQDN 
 
 ## POST file to check with curl
-curl  -H "multipart/form-data; boundary=" http://localhost:10000/upload -F  data=@file_with_domains.txt
+curl  -H "multipart/form-data; boundary=" http://localhost:8080/upload -F data=@1.txt
 
 ## Usage
 Usage of ./check-ssl:
