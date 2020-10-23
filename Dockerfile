@@ -12,7 +12,6 @@ RUN go clean -modcache
 RUN go mod download
 COPY . .
 
-RUN go get -v github.com/docker/docker
 RUN go build -o ssl
 
 
@@ -28,4 +27,4 @@ COPY --from=base app/ssl /
 EXPOSE 10000
 
 # Command to run the executable
-CMD ["./ssl -rest"]
+ENTRYPOINT ["./ssl", "-rest"]

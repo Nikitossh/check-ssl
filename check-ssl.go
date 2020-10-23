@@ -245,7 +245,7 @@ func lookupIPWithTimeout(host string, timeout time.Duration) []net.IP {
 	go func() {
 		r, err := net.LookupIP(host)
 		if err != nil {
-			log.Fatal(err)
+			log.Error(err)
 		}
 		ch <- r
 	}()
