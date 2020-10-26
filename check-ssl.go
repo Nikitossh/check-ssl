@@ -93,9 +93,9 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	log.Infoln("Uploaded File: %+v\n", handler.Filename)
-	log.Infoln("File Size: %+v\n", handler.Size)
-	log.Infoln("MIME Header: %+v\n", handler.Header)
+	log.Infof("Uploaded File: %+v\n", handler.Filename)
+	log.Infof("File Size: %+v\n", handler.Size)
+	log.Infof("MIME Header: %+v\n", handler.Header)
 
 	scanner := bufio.NewScanner(file)
 	result := make([]string, 0)
